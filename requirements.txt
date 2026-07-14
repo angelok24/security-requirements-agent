@@ -1,0 +1,6 @@
+requests
+pandas
+openpyxl
+pillow
+scikit-learn
+numpy
