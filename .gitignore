@@ -1,0 +1,26 @@
+# === Секреты — НИКОГДА не коммитить! ===
+.env
+*.key
+
+# === Результаты работы (Excel) и данные ===
+*.xlsx
+*.xlsm
+*.xls
+*.png
+*.jpg
+*.jpeg
+# исключение: картинки для README можно добавлять принудительно (git add -f)
+
+# === Python / Jupyter ===
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+venv/
+.venv/
+env/
+
+# === IDE / ОС ===
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
