@@ -46,6 +46,80 @@
 
 ---
 
+## 🧩 Как устроен код
+
+Весь конвейер собран в ноутбуке `security_requirements_agent.ipynb`. Ниже — разбор ключевых механизмов (код упрощён для наглядности).
+
+**1. Переключение между моделями.** Функции агента не привязаны к конкретной нейросети — они вызывают единый диспетчер `ask_llm`, который направляет запрос в выбранную модель. Чтобы сравнить модели, достаточно поменять одну переменную:
+
+```python
+MODEL = 'yandex'   # или 'gigachat'
+
+def ask_llm(prompt, max_tokens=2000):
+    if MODEL == 'gigachat':
+        return gigachat(prompt, max_tokens)
+    return yandex_gpt(prompt, max_tokens)
+```
+
+**2. Распознавание схемы (OCR).** Изображение кодируется в Base64 и отправляется в Yandex Vision; из ответа собирается весь текст со схемы, который затем попадёт в промпт:
+
+```python
+def yandex_vision(image_path):
+    payload = {'mimeType': mime, 'languageCodes': ['ru','en'], 'content': encode_image(image_path)}
+    resp = requests.post(VISION_URL, headers=get_headers(), json=payload)
+    ...
+    return '\n'.join(texts)   # весь распознанный текст схемы
+```
+
+**3. Анализ архитектуры (LLM → JSON).** Модель получает распознанный текст и промпт с few-shot-примерами и возвращает строгий JSON: компоненты, потоки данных и архитектурные флаги (есть ли API, БД, IAM, ПДн). Ответ очищается от markdown и парсится:
+
+```python
+raw = ask_llm(prompt, 2000).strip()
+if '```' in raw:
+    raw = raw.split('```')[1]          # убираем обёртку ```json ... ```
+result = json.loads(raw)               # {'components': [...], 'data_flows': [...], 'has_api': True, ...}
+```
+
+**4. Трёхэтапный отбор требований** — ядро проекта. Из полного каталога остаются только релевантные архитектуре требования:
+
+```python
+# Этап 1 — фильтр по классу критичности (убираем неприменимые)
+# Этап 2 — контекстный фильтр: раздел включается, только если в схеме есть нужный компонент
+if section == 'Безопасность Web' and not has_web:
+    continue
+# Этап 3 — ранжирование по TF-IDF сходству с описанием архитектуры, берём топ-N
+sims = cosine_similarity(vectorizer.transform([arch_description]),
+                         vectorizer.transform(req_texts))[0]
+```
+
+**5. Авторизация GigaChat.** В отличие от Яндекса (ключ сразу в заголовке), GigaChat сначала обменивает ключ на временный токен доступа и обновляет его при истечении:
+
+```python
+def gigachat(prompt, max_tokens=2000):
+    global _giga_token
+    if _giga_token is None:
+        _giga_token = get_gigachat_token()      # обмен ключа на токен (30 мин)
+    resp = requests.post(GIGACHAT_API_URL, headers=..., json=payload, verify=False)
+    if resp.status_code == 401:                 # токен истёк — обновляем и повторяем
+        _giga_token = get_gigachat_token()
+        resp = requests.post(...)
+    return resp.json()['choices'][0]['message']['content']
+```
+
+**6. Оценка качества.** Требования агента и эксперта переводятся в TF-IDF-векторы; по косинусному сходству ищутся совпадения (порог 0.35), из которых считаются Precision / Recall / F1:
+
+```python
+sim_matrix = cosine_similarity(vectorizer.transform(expert_texts),
+                               vectorizer.transform(system_texts))
+tp = sum(1 for ei in range(len(expert_texts))
+         if sim_matrix[ei].max() >= SIMILARITY_THRESHOLD)     # число совпадений
+precision = tp / len(system_reqs)
+recall    = tp / len(expert_reqs)
+f1        = 2 * precision * recall / (precision + recall)
+```
+
+---
+
 ## 🖼️ Пример входных данных
 
 На вход агент получает **архитектурную схему** системы. Ниже — обезличенный пример подобной схемы: внешние системы, сервис аутентификации (IAM), сервис-сборщик, база данных PostgreSQL и BI-дашборд с потоками данных по HTTPS.
